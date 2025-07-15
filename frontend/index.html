@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Live Subtitles</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="container">
+    <div id="device-selection">
+      <label for="audio-input">Select Audio Input:</label>
+      <select id="audio-input"></select>
+      <button id="start-listening">Start Listening</button>
+    </div>
+    <div id="listening-indicator" class="hidden">
+      <div class="cube"></div>
+      <p>Listening...</p>
+    </div>
+    <div id="subtitle-container">
+      <div id="hindi-subtitle" class="subtitle-text"></div>
+      <div id="english-subtitle" class="subtitle-text">Waiting for translation...</div>
+    </div>
+  </div>
+  <script src="script.js"></script>
+</body>
+</html>

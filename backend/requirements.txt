@@ -1,0 +1,8 @@
+faster-whisper
+transformers
+torch
+sounddevice
+numpy
+websockets
+aiohttp
+sentencepiece
