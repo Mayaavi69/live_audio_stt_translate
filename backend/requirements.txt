@@ -1,8 +1,10 @@
 faster-whisper
-transformers
-torch
+transformers==4.30.0
+torch==2.0.0+cpu
 sounddevice
 numpy
 websockets
 aiohttp
 sentencepiece
+torchvision==0.15.0+cpu
+torchaudio==2.0.0+cpu

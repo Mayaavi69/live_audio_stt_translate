@@ -15,6 +15,10 @@ kill_port_processes() {
 kill_port_processes 8768 # WebSocket server port
 kill_port_processes 8100 # HTTP server port
 
+# Install Python dependencies
+echo "Installing Python dependencies from backend/requirements.txt..."
+pip install -r backend/requirements.txt
+
 # Function to kill all background processes started by this script
 cleanup() {
     echo "Stopping all background processes..."

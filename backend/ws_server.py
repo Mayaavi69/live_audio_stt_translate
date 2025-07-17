@@ -7,9 +7,10 @@ async def handler(websocket): # Removed 'path' argument
     clients.add(websocket)
     try:
         async for message in websocket:
+            print(f"Received message from client: {message}")
             for client in clients:
-                if client != websocket:
-                    await client.send(message)
+                # Broadcast to all connected clients
+                await client.send(message)
     except websockets.exceptions.ConnectionClosed:
         pass
     finally:

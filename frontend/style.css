@@ -19,6 +19,14 @@ body {
   max-width: 1200px;
 }
 
+#status-message {
+  margin-top: 10px;
+  margin-bottom: 20px;
+  font-size: 1.1em;
+  color: white; /* Default color, will be changed by JS for errors */
+  text-align: center;
+}
+
 #device-selection {
   margin-bottom: 20px;
   font-size: 1.2em;
