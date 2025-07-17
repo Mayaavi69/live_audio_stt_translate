@@ -15,10 +15,6 @@ kill_port_processes() {
 kill_port_processes 8768 # WebSocket server port
 kill_port_processes 8100 # HTTP server port
 
-# Install Python dependencies
-echo "Installing Python dependencies from backend/requirements.txt..."
-pip install -r backend/requirements.txt
-
 # Function to kill all background processes started by this script
 cleanup() {
     echo "Stopping all background processes..."
@@ -29,6 +25,26 @@ cleanup() {
 
 # Trap SIGINT (Ctrl+C) to call the cleanup function
 trap cleanup SIGINT
+
+# Create and activate virtual environment
+VENV_DIR=".venv"
+if [ ! -d "$VENV_DIR" ]; then
+    echo "Creating virtual environment..."
+    python3 -m venv "$VENV_DIR"
+fi
+
+echo "Activating virtual environment..."
+source "$VENV_DIR"/bin/activate
+
+# Install Python dependencies
+echo "Installing PyTorch and related dependencies..."
+pip install torch==2.0.0 torchvision==0.15.0 torchaudio==2.0.0 --index-url https://download.pytorch.org/whl/cpu
+
+echo "Installing faster-whisper and transformers..."
+pip install faster-whisper transformers==4.30.0
+
+echo "Installing other Python dependencies from backend/requirements.txt..."
+pip install -r backend/requirements.txt
 
 # Navigate to backend and start WebSocket server
 cd backend
