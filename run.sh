@@ -48,19 +48,14 @@ pip install -r backend/requirements.txt
 
 # Navigate to backend and start WebSocket server
 cd backend
-python ws_server.py &
-
-# Store the PID of the WebSocket server
-WS_SERVER_PID=$!
-
-# Wait a moment for the WebSocket server to start
-sleep 5
-
-# Start real-time mic listener
 python main.py &
 
-# Store the PID of the main listener
+# Store the PID of the main listener (now also includes WebSocket server)
 MAIN_LISTENER_PID=$!
+WS_SERVER_PID=$MAIN_LISTENER_PID # Use the same PID for cleanup
+
+# Wait a moment for the backend to start
+sleep 5
 
 # Navigate to frontend and start HTTP server
 cd ../frontend

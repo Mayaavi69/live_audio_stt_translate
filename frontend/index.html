@@ -12,7 +12,13 @@
       <select id="audio-input"></select>
       <button id="start-listening">Start Listening</button>
     </div>
-    <div id="status-message"></div> <!-- New status message div -->
+
+    <div id="file-upload-section">
+      <input type="file" id="audio-file-input" accept="audio/*">
+      <button id="upload-audio-button">Upload Audio for Transcription</button>
+    </div>
+
+    <div id="status-message"></div>
     <div id="listening-indicator" class="hidden">
       <div class="cube"></div>
       <p>Listening...</p>

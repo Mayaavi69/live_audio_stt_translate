@@ -1,5 +1,4 @@
 import asyncio
-import sounddevice as sd
 import numpy as np
 from faster_whisper import WhisperModel
 from transformers import MarianMTModel, MarianTokenizer
@@ -7,6 +6,9 @@ import websockets
 import json
 import concurrent.futures
 import logging
+import io
+from pydub import AudioSegment
+import sounddevice as sd # Keep sounddevice for live input option
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -30,7 +32,7 @@ except Exception as e:
     exit(1)
 
 # WebSocket endpoint
-WS_SERVER = "ws://localhost:8768"
+WS_SERVER_PORT = 8768
 
 # Global variable to hold the main event loop
 _main_event_loop = None
@@ -39,20 +41,20 @@ _main_event_loop = None
 audio_queue = asyncio.Queue()
 subtitle_output_queue = asyncio.Queue() # New queue for processed subtitles
 
-# Persistent WebSocket connection for sending subtitles
-websocket_client = None
+# Set of connected WebSocket clients
+connected_clients = set()
 
-async def connect_to_websocket():
-    global websocket_client
-    while True:
-        try:
-            logging.info(f"Attempting to connect to WebSocket server at {WS_SERVER}...")
-            websocket_client = await websockets.connect(WS_SERVER)
-            logging.info("Successfully connected to WebSocket server.")
-            return
-        except Exception as e:
-            logging.error(f"WebSocket connection failed: {e}. Retrying in 5 seconds...")
-            await asyncio.sleep(5)
+# Audio processing constants
+SAMPLE_RATE = 16000 # Hz
+CHUNK_SIZE_MS = 1000 # milliseconds (1 second chunks for file processing)
+
+async def register_client(websocket):
+    connected_clients.add(websocket)
+    logging.info(f"Client {websocket.remote_address} connected. Total clients: {len(connected_clients)}")
+
+async def unregister_client(websocket):
+    connected_clients.remove(websocket)
+    logging.info(f"Client {websocket.remote_address} disconnected. Total clients: {len(connected_clients)}")
 
 def translate_hindi_to_english(text):
     if not text.strip():
@@ -65,36 +67,36 @@ def translate_hindi_to_english(text):
         logging.error(f"Translation error for text '{text}': {e}")
         return "[Translation Error]"
 
-async def send_subtitle_to_ws(data):
-    global websocket_client
-    if not websocket_client or not websocket_client.open:
-        logging.warning("WebSocket client not connected. Attempting to reconnect...")
-        await connect_to_websocket() # Reconnect if not open
+async def send_subtitle_to_all_clients(data):
+    if not connected_clients:
+        logging.warning("No WebSocket clients connected to send subtitles.")
+        return
 
-    try:
-        await websocket_client.send(json.dumps(data))
-        logging.debug(f"Sent data to WebSocket: {data}")
-    except websockets.exceptions.ConnectionClosedOK:
-        logging.warning("WebSocket connection closed gracefully. Reconnecting...")
-        websocket_client = None # Mark as closed
-        await connect_to_websocket()
-        await websocket_client.send(json.dumps(data)) # Try sending again after reconnect
-    except Exception as e:
-        logging.error(f"Error sending data to WebSocket: {e}")
-        websocket_client = None # Mark as closed to trigger reconnect
+    message = json.dumps(data)
+    # Send to all connected clients
+    disconnected_clients = set()
+    for client in connected_clients:
+        try:
+            await client.send(message)
+        except websockets.exceptions.ConnectionClosedOK:
+            disconnected_clients.add(client)
+        except Exception as e:
+            logging.error(f"Error sending to client {client.remote_address}: {e}")
+            disconnected_clients.add(client)
+    for client in disconnected_clients:
+        await unregister_client(client) # Clean up disconnected clients
 
-async def process_subtitles_for_frontend(): # Renamed for clarity
+async def process_subtitles_for_frontend():
     while True:
         hindi_text, english_text = await subtitle_output_queue.get()
-        if hindi_text or english_text: # Only send if there's actual text
+        if hindi_text or english_text:
             logging.info(f"🎧 HINDI (sending to frontend): {hindi_text}")
             logging.info(f"🌐 ENGLISH (sending to frontend): {english_text}")
-            await send_subtitle_to_ws({"hindi": hindi_text, "english": english_text})
+            await send_subtitle_to_all_clients({"hindi": hindi_text, "english": english_text})
         else:
             logging.info("Empty subtitle received, not sending to frontend.")
         subtitle_output_queue.task_done()
 
-# This function will run the blocking STT and translation
 def blocking_transcribe_and_translate(audio_data):
     audio_np = np.frombuffer(audio_data, dtype=np.float32)
     logging.debug(f"Processing audio chunk of size: {len(audio_np)} samples")
@@ -120,7 +122,6 @@ async def audio_processing_worker():
     with concurrent.futures.ThreadPoolExecutor() as pool:
         while True:
             audio_data = await audio_queue.get()
-            # Run the blocking operations in a separate thread
             processed_segments = await loop.run_in_executor(
                 pool,
                 blocking_transcribe_and_translate,
@@ -130,26 +131,20 @@ async def audio_processing_worker():
                 await subtitle_output_queue.put((hindi, english))
             audio_queue.task_done()
 
-# Record from mic - this callback should be as fast as possible
-def callback(indata, frames, time, status):
+# Live microphone input callback
+def live_audio_callback(indata, frames, time, status):
     if status:
         logging.warning(f"Sounddevice status: {status}")
     audio_bytes = indata.copy().tobytes()
-    # Check if audio_bytes has actual data
     if len(audio_bytes) > 0:
-        # Use the stored main event loop
         if _main_event_loop and _main_event_loop.is_running():
             asyncio.run_coroutine_threadsafe(audio_queue.put(audio_bytes), _main_event_loop)
         else:
             logging.error("Main event loop not running or not set in callback.")
     else:
-        logging.info("No audio data received in callback.")
+        logging.info("No live audio data received in callback.")
 
-async def start_listening_async():
-    global _main_event_loop
-    _main_event_loop = asyncio.get_running_loop() # Store the running loop
-
-    # Get available audio devices
+async def start_live_microphone_input():
     try:
         devices = sd.query_devices()
         input_devices = [d for d in devices if d['max_input_channels'] > 0]
@@ -159,28 +154,100 @@ async def start_listening_async():
 
         default_input_device_info = sd.query_devices(kind='input')
         logging.info(f"\nUsing default input device: {default_input_device_info['name']}")
-    except Exception as e:
-        logging.error(f"Error querying audio devices: {e}")
-        logging.warning("Proceeding without device enumeration. Ensure a default input device is available.")
 
-    # Establish WebSocket connection before starting audio stream
-    await connect_to_websocket()
-
-    try:
-        with sd.InputStream(callback=callback, channels=1, samplerate=16000, dtype='float32'):
-            logging.info("🎙️ Listening...")
-            # Start the worker tasks
-            asyncio.create_task(audio_processing_worker())
-            asyncio.create_task(process_subtitles_for_frontend())
-            while True:
-                await asyncio.sleep(1)
+        with sd.InputStream(callback=live_audio_callback, channels=1, samplerate=SAMPLE_RATE, dtype='float32'):
+            logging.info("🎙️ Live microphone input started...")
+            await asyncio.Future() # Keep stream open indefinitely
     except Exception as e:
-        logging.critical(f"Fatal error in audio input stream: {e}")
-        # Attempt to gracefully close WebSocket connection on critical error
-        if websocket_client and websocket_client.open:
-            await websocket_client.close()
+        logging.critical(f"Fatal error in live audio input stream: {e}")
+        # Consider sending an error message to frontend clients
         exit(1)
 
+async def process_uploaded_audio_data(audio_bytes_data):
+    try:
+        # pydub can read from a BytesIO object
+        audio_segment = AudioSegment.from_file(io.BytesIO(audio_bytes_data))
+        audio_segment = audio_segment.set_frame_rate(SAMPLE_RATE).set_channels(1).set_sample_width(2) # 16-bit samples
+
+        total_length_ms = len(audio_segment)
+        logging.info(f"Processing uploaded audio (Duration: {total_length_ms / 1000} seconds)")
+
+        # Send a "start processing" message to frontend
+        await send_subtitle_to_all_clients({"hindi": "", "english": "Processing uploaded audio..."})
+
+        for i in range(0, total_length_ms, CHUNK_SIZE_MS):
+            chunk = audio_segment[i:i + CHUNK_SIZE_MS]
+            if not chunk:
+                continue
+
+            # Convert chunk to raw audio bytes (PCM, 16-bit, mono)
+            raw_audio_data = np.array(chunk.get_array_of_samples()).astype(np.float32).tobytes()
+            
+            if raw_audio_data:
+                await audio_queue.put(raw_audio_data)
+            await asyncio.sleep(CHUNK_SIZE_MS / 1000.0) # Simulate real-time processing speed
+        
+        logging.info("Finished processing uploaded audio.")
+        await send_subtitle_to_all_clients({"hindi": "", "english": "Finished processing audio."})
+
+    except Exception as e:
+        logging.error(f"Error processing uploaded audio: {e}")
+        await send_subtitle_to_all_clients({"hindi": "", "english": f"Error processing audio: {e}"})
+
+async def websocket_handler(websocket, *args, **kwargs):
+    logging.info(f"WebSocket handler called with args: {args}, kwargs: {kwargs}")
+    path = kwargs.get('path') # Extract path if it's passed as a keyword argument
+    if path is None and len(args) > 1: # If path is not in kwargs, check positional arguments
+        path = args[1] # Assuming path is the second positional argument
+
+    await register_client(websocket)
+    try:
+        async for message in websocket:
+            if isinstance(message, str):
+                try:
+                    control_message = json.loads(message)
+                    if control_message.get("type") == "start_live_audio":
+                        logging.info("Received 'start_live_audio' command from frontend.")
+                        # This assumes live audio is handled by a separate task that can be started/stopped.
+                        # For simplicity, we'll just log it here. The `run.sh` will manage starting live input.
+                        await send_subtitle_to_all_clients({"hindi": "", "english": "Live audio input active."})
+                    elif control_message.get("type") == "audio_file_upload_start":
+                        logging.info("Received 'audio_file_upload_start' command. Preparing for file data.")
+                        # Frontend will send binary audio data next
+                        await send_subtitle_to_all_clients({"hindi": "", "english": "Receiving audio file..."})
+                except json.JSONDecodeError:
+                    logging.warning(f"Received non-JSON string message: {message}")
+            elif isinstance(message, bytes):
+                logging.info(f"Received binary audio data of size: {len(message)} bytes")
+                # Assuming the entire file is sent as one binary message for simplicity
+                # For large files, this would need chunking and accumulation
+                asyncio.create_task(process_uploaded_audio_data(message))
+            else:
+                logging.warning(f"Received unknown message type: {type(message)}")
+    except websockets.exceptions.ConnectionClosedOK:
+        logging.info(f"Client {websocket.remote_address} disconnected gracefully.")
+    except Exception as e:
+        logging.error(f"WebSocket handler error for {websocket.remote_address}: {e}")
+    finally:
+        await unregister_client(websocket)
+
+async def main():
+    global _main_event_loop
+    _main_event_loop = asyncio.get_running_loop()
+
+    # Start the core processing workers
+    asyncio.create_task(audio_processing_worker())
+    asyncio.create_task(process_subtitles_for_frontend())
+
+    # Start the WebSocket server
+    websocket_server = await websockets.serve(websocket_handler, "0.0.0.0", WS_SERVER_PORT)
+    logging.info(f"🌐 WebSocket Server running at ws://localhost:{WS_SERVER_PORT}")
+
+    # Start live microphone input as a background task
+    # This will run concurrently with the WebSocket server and file processing
+    asyncio.create_task(start_live_microphone_input())
+
+    await asyncio.Future() # Keep the main loop running indefinitely
 
 if __name__ == "__main__":
-    asyncio.run(start_listening_async())
+    asyncio.run(main())

@@ -3,7 +3,9 @@ const startListeningButton = document.getElementById("start-listening");
 const listeningIndicator = document.getElementById("listening-indicator");
 const hindiSubtitleDiv = document.getElementById("hindi-subtitle");
 const englishSubtitleDiv = document.getElementById("english-subtitle");
-const statusMessageDiv = document.getElementById("status-message"); // New element for status messages
+const statusMessageDiv = document.getElementById("status-message");
+const audioFileInput = document.getElementById("audio-file-input");
+const uploadAudioButton = document.getElementById("upload-audio-button");
 
 let ws; // Declare WebSocket globally to manage connection state
 
@@ -12,6 +14,7 @@ function updateStatus(message, isError = false) {
   statusMessageDiv.style.color = isError ? "red" : "white";
   if (isError) {
     listeningIndicator.classList.add("hidden");
+    // Show live input options if there's an error with file upload or general issue
     startListeningButton.style.display = "block";
     audioInputSelect.style.display = "block";
     document.querySelector('label[for="audio-input"]').style.display = "block";
@@ -27,11 +30,13 @@ function connectWebSocket() {
 
   ws.onopen = () => {
     console.log("WebSocket connected.");
-    updateStatus("Connected to backend. Waiting for audio...", false);
-    listeningIndicator.classList.remove("hidden");
-    startListeningButton.style.display = "none";
-    audioInputSelect.style.display = "none";
-    document.querySelector('label[for="audio-input"]').style.display = "none";
+    updateStatus("Connected to backend. Ready for live audio or file upload.", false);
+    listeningIndicator.classList.add("hidden"); // Hide listening indicator initially
+    startListeningButton.style.display = "block";
+    audioInputSelect.style.display = "block";
+    document.querySelector('label[for="audio-input"]').style.display = "block";
+    uploadAudioButton.style.display = "block";
+    audioFileInput.style.display = "block";
   };
 
   ws.onmessage = (event) => {
@@ -39,7 +44,7 @@ function connectWebSocket() {
       const data = JSON.parse(event.data);
       hindiSubtitleDiv.textContent = data.hindi;
       englishSubtitleDiv.textContent = data.english;
-      updateStatus("Listening...", false); // Clear any previous status messages
+      updateStatus("Receiving transcription...", false);
     } catch (e) {
       console.error("Error parsing WebSocket message:", e);
       updateStatus("Error processing subtitle data.", true);
@@ -72,18 +77,16 @@ async function populateAudioDevices() {
       audioInputSelect.appendChild(option);
       startListeningButton.disabled = true;
       updateStatus("No microphone found. Please connect one.", true);
-      return;
+    } else {
+      audioInputDevices.forEach(device => {
+        const option = document.createElement('option');
+        option.value = device.deviceId;
+        option.textContent = device.label || `Microphone ${audioInputSelect.options.length + 1}`;
+        audioInputSelect.appendChild(option);
+      });
+      startListeningButton.disabled = false;
+      updateStatus("Select your microphone and click 'Start Listening' or upload an audio file.", false);
     }
-
-    audioInputDevices.forEach(device => {
-      const option = document.createElement('option');
-      option.value = device.deviceId;
-      option.textContent = device.label || `Microphone ${audioInputSelect.options.length + 1}`;
-      audioInputSelect.appendChild(option);
-    });
-    startListeningButton.disabled = false;
-    updateStatus("Select your microphone and click 'Start Listening'.", false);
-
   } catch (error) {
     console.error("Error enumerating devices:", error);
     updateStatus("Error accessing microphone devices. Please grant permission.", true);
@@ -96,17 +99,58 @@ populateAudioDevices();
 
 // Handle start listening button click (client-side, for visual feedback)
 startListeningButton.addEventListener("click", () => {
-  // This button is primarily for visual feedback on the frontend.
-  // The actual mic listening starts with the Python backend.
-  updateStatus("Starting backend audio processing...", false);
-  connectWebSocket(); // Attempt to connect WebSocket when button is clicked
+  updateStatus("Starting live audio processing...", false);
+  listeningIndicator.classList.remove("hidden");
+  // Hide file upload options
+  uploadAudioButton.style.display = "none";
+  audioFileInput.style.display = "none";
+  // Ensure WebSocket is connected
+  connectWebSocket();
+  // Send a message to the backend to start live listening (if needed, or backend auto-starts)
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: "start_live_audio" }));
+  }
 });
+
+// Handle audio file upload
+uploadAudioButton.addEventListener("click", () => {
+  const file = audioFileInput.files[0];
+  if (!file) {
+    updateStatus("Please select an audio file first.", true);
+    return;
+  }
+
+  updateStatus("Uploading audio file for transcription...", false);
+  listeningIndicator.classList.remove("hidden"); // Show processing indicator
+  // Hide live input options
+  startListeningButton.style.display = "none";
+  audioInputSelect.style.display = "none";
+  document.querySelector('label[for="audio-input"]').style.display = "none";
+
+  const reader = new FileReader();
+  reader.onload = (event) => {
+    const audioData = event.target.result; // ArrayBuffer
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      // Send audio data as a binary message or base64 string
+      // For simplicity, sending as ArrayBuffer directly. Backend needs to handle this.
+      ws.send(audioData);
+      updateStatus("Audio file sent. Processing...", false);
+    } else {
+      updateStatus("WebSocket not connected. Cannot upload file.", true);
+      connectWebSocket(); // Try to reconnect
+    }
+  };
+  reader.onerror = (error) => {
+    console.error("Error reading file:", error);
+    updateStatus("Error reading audio file.", true);
+  };
+  reader.readAsArrayBuffer(file);
+});
+
 
 // Request microphone permission on page load
 navigator.mediaDevices.getUserMedia({ audio: true })
   .then(stream => {
-    // Mic access granted, no need to do anything with the stream here
-    // as the Python backend handles the actual audio capture.
     stream.getTracks().forEach(track => track.stop()); // Stop the stream immediately
     updateStatus("Microphone access granted. Ready to connect.", false);
   })
