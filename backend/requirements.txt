@@ -1,6 +1,12 @@
+google-cloud-speech
+requests
+transformers
+faster-whisper
 sounddevice
-numpy
 websockets
-aiohttp
-sentencepiece
 pydub
+numpy<2
+python-dotenv
+sacremoses
+RealtimeSTT
+PyQt6
